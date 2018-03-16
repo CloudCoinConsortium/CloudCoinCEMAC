@@ -19,6 +19,7 @@ using System.DrawingCore;
 using System.DrawingCore.Imaging;
 using System.Collections.Generic;
 using CoreGraphics;
+
 namespace CloudCoinMAC
 {
     public partial class ViewController : NSViewController
@@ -90,7 +91,6 @@ namespace CloudCoinMAC
 
 
 
-
             
             // Do any additional setup after loading the view.
         }
@@ -101,7 +101,8 @@ namespace CloudCoinMAC
         {
             ProgressChangedEventArgs pge = (ProgressChangedEventArgs)e;
             //DetectEventArgs eargs = e;
-            updateLog(pge.MajorProgressMessage);
+            //updateLog(pge.MajorProgressMessage);
+            logger.Info(pge.MajorProgressMessage);
             //Debug.WriteLine("Coin Detection Event Recieved - " + eargs.DetectedCoin.sn);
         }
         partial void EchoClick(NSObject sender)
@@ -111,18 +112,20 @@ namespace CloudCoinMAC
 
         }
         
-        public void updateLog(string logLine)
+        public void updateLog(string logLine,bool writeUI = true)
         {
             BeginInvokeOnMainThread(() =>
             {
                 NSString str = new NSString(logLine + System.Environment.NewLine);
                 //txtProgress.StringValue += logLine + System.Environment.NewLine;
                 //txtProgress.InsertText(str);
-                
-                NSRange rang = new NSRange(txtLogs.Value.Length,0);
+                if(writeUI){
+                    NSRange rang = new NSRange(txtLogs.Value.Length, 0);
 
-                txtLogs.SetSelectedRange(rang);
-                txtLogs.InsertText(str);
+                    txtLogs.SetSelectedRange(rang);
+                    txtLogs.InsertText(str);
+                }
+
 
                 logger.Info(logLine);
             });
@@ -202,7 +205,7 @@ namespace CloudCoinMAC
                 for (int i = 0; i < dlg.Urls.Length; i++)
                 {
                     Console.WriteLine(dlg.Urls[i].Path);
-                    updateLog(dlg.Urls[i].Path);
+                    updateLog("Selected "+dlg.Urls[i].Path);
 
 
                     var filename = dlg.Urls[i].Path;
@@ -235,7 +238,7 @@ namespace CloudCoinMAC
                     }
                     File.Delete(filename);
 
-                    updateLog("Copied " + filename + "to " +
+                    updateLog("Copied " + filename + " to " +
                               FS.ImportFolder + Path.GetFileName(filename));
 
                 }
@@ -269,7 +272,13 @@ namespace CloudCoinMAC
                 return;
             }
             fixer.continueExecution = false;
-            if (fixer.IsFixing){
+
+            printLineDots();
+            updateLog("Starting CloudCoin Import. \n\tPlease do not close the CloudCoin CE program until it is finished." +
+                      "\n\tOtherwise it may result in loss of CloudCoins.");
+            printLineDots();
+            if (fixer.IsFixing)
+            {
                 updateLog("Stopping Fix");
                 Debug.WriteLine("Stopping Fix");
             }
@@ -282,8 +291,12 @@ namespace CloudCoinMAC
             int filesCount = Directory.GetFiles(FS.ImportFolder).Length;
             if(files.Count == 0) {
                 bool PickResult = PickFiles();
-                if (!PickResult)
+                if (!PickResult){
+                    Task.Run(() => {
+                        Fix();
+                    });
                     return;
+                }      
             }
             DisableUI();
             Detect();
@@ -295,7 +308,7 @@ namespace CloudCoinMAC
         {
             DisableUI();
             var echos = AppDelegate.raida.GetEchoTasks();
-            updateLog("Starting Echo to RAIDA");
+            updateLog("\tEcho RAIDA");
             updateLog("----------------------------------");
 
             await Task.WhenAll(echos.AsParallel().Select(async task => await task()));
@@ -315,25 +328,25 @@ namespace CloudCoinMAC
             raidaLevel.IntValue = raida.ReadyCount;
 
             Debug.WriteLine("-----------------------------------\n");
-            updateLog("Ready Nodes : " + Convert.ToString(raida.ReadyCount) + "\n");
-            updateLog("Not Ready Nodes : " + Convert.ToString(raida.NotReadyCount) + "\n");
+            updateLog("\tReady Nodes : " + Convert.ToString(raida.ReadyCount) + "\n");
+            updateLog("\tNot Ready Nodes : " + Convert.ToString(raida.NotReadyCount) + "");
 
             Debug.WriteLine("Ready Nodes-" + Convert.ToString(raida.ReadyCount));
             Debug.WriteLine("Not Ready Nodes-" + Convert.ToString(raida.NotReadyCount));
+            updateLog("----------------------------------");
 
             EnableUI();
             if (resumeFix)
                 Task.Run(() => {
-                    fix();
+                    Fix();
                 });
             //txtProgress.AppendText("----------------------------------\n");
         }
 
         public async void Detect()
         {
-            updateLog("Starting CloudCoin Import. Please do not close the CloudCoin CE program untill it is finished." +
-                      "Otherwise it may result in loss of CloudCoins.");
-            updateLog("Starting Multi Detect..");
+            updateLog("Starting Detect..");
+            printLineDots();
             TimeSpan ts = new TimeSpan();
             DateTime before = DateTime.Now;
             DateTime after;
@@ -341,7 +354,8 @@ namespace CloudCoinMAC
 
             // Prepare Coins for Import
             FS.DetectPreProcessing();
-
+            FS.MoveCoins(FileSystem.suspectCoins, FS.SuspectFolder, FS.PreDetectFolder);
+            
             IEnumerable<CloudCoin> predetectCoins = FS.LoadFolderCoins(FS.PreDetectFolder);
             FileSystem.predetectCoins = predetectCoins;
 
@@ -381,7 +395,13 @@ namespace CloudCoinMAC
                 var coins = predetectCoins.Skip(i * CloudCoinCore.Config.MultiDetectLoad).Take(200);
                 coins.ToList().ForEach(x=>x.pown="");
                 raida.coins = coins;
-
+                if(i == LotCount-1) {
+                    updateLog("\tDetecting Coins " + (i * CloudCoinCore.Config.MultiDetectLoad + 1) +
+                              " to " + totalCoinCount);
+                }
+                else
+                    updateLog("\tDetecting Coins " + (i * CloudCoinCore.Config.MultiDetectLoad + 1) + 
+                          " to " + (i + 1) * CloudCoinCore.Config.MultiDetectLoad);
                 var tasks = raida.GetMultiDetectTasks(coins.ToArray(), CloudCoinCore.Config.milliSecondsToTimeOut);
                 try
                 {
@@ -396,7 +416,7 @@ namespace CloudCoinMAC
                         coin.pown = "";
                         for (int k = 0; k < CloudCoinCore.Config.NodeCount; k++)
                         {
-                            coin.response[k] = raida.nodes[k].multiResponse.responses[j];
+                            coin.response[k] = raida.nodes[k].MultiResponse.responses[j];
                             coin.pown += coin.response[k].outcome.Substring(0, 1);
                         }
                         int countp = coin.response.Where(x => x.outcome == "pass").Count();
@@ -406,7 +426,7 @@ namespace CloudCoinMAC
                         CoinCount++;
                         updateLog("No. " + CoinCount + ". Coin Detected. S. No. : " + coin.sn + ". Pass Count : " + 
                                   coin.PassCount + ". Fail Count  : " + coin.FailCount + ". Result : " + 
-                                  coin.DetectionResult + "." + coin.pown + ".");
+                                  coin.DetectionResult + "." + coin.pown + ".",false);
 
 
                         Debug.WriteLine("Coin Detected. S. No. - " + coin.sn + ". Pass Count : " + coin.PassCount + ". Fail Count  : " + coin.FailCount + ". Result - " + coin.DetectionResult);
@@ -445,12 +465,16 @@ namespace CloudCoinMAC
             pge.MinorProgress = 100;
             Debug.WriteLine("Minor Progress- " + pge.MinorProgress);
             raida.OnProgressChanged(pge);
+            updateLog("\tDetection finished.");
+            printLineDots();
+            updateLog("Starting Grading Coins..");
             var detectedCoins = FS.LoadFolderCoins(FS.DetectedFolder);
             detectedCoins.ForEach(x => x.setAnsToPansIfPassed());
             detectedCoins.ForEach(x => x.calculateHP());
             detectedCoins.ForEach(x => x.calcExpirationDate());
 
             detectedCoins.ForEach(x => x.SortToFolder());
+            updateLog("Grading Coins Completed.");
             //foreach (var coin in detectedCoins)
             //{
             //    //updateLog()
@@ -480,13 +504,13 @@ namespace CloudCoinMAC
            
             Debug.WriteLine("Total Passed Coins - " + passedCoins.Count());
             Debug.WriteLine("Total Failed Coins - " + failedCoins.Count());
-            updateLog("Coin Detection finished.");
-            updateLog("Total Passed Coins : " + (passedCoins.Count() + frackedCoins.Count()) + "");
-            updateLog("Total Counterfeit Coins : " + failedCoins.Count() + "");
-            updateLog("Total Lost Coins : " + lostCoins.Count() + "");
-            updateLog("Total Suspect Coins : " + suspectCoins.Count() + "");
-            updateLog("Total Skipped Coins : " + existingCoins.Count() + "");
-            updateLog("Total Dangerous Coins : " + dangerousCoins.Count() + "");
+            updateLog("Detection and Import of the CloudCoins completed.");
+            updateLog("\tTotal Passed Coins : " + (passedCoins.Count() + frackedCoins.Count()) + "");
+            updateLog("\tTotal Counterfeit Coins : " + failedCoins.Count() + "");
+            updateLog("\tTotal Lost Coins : " + lostCoins.Count() + "");
+            updateLog("\tTotal Suspect Coins : " + suspectCoins.Count() + "");
+            updateLog("\tTotal Skipped Coins : " + existingCoins.Count() + "");
+            updateLog("\tTotal Dangerous Coins : " + dangerousCoins.Count() + "");
 
 
             // Move Coins to their respective folders after sort
@@ -513,20 +537,21 @@ namespace CloudCoinMAC
 
             Debug.WriteLine("Detection Completed in : " + ts.TotalMilliseconds / 1000);
             updateLog("Detection Completed in : " + ts.TotalMilliseconds / 1000);
+            printLineDots();
             EnableUI();
             ShowCoins();
             Task.Run(() => {
-                fix();
+                Fix();
             });
             FS.LoadFileSystem();
  
         }
 
-        private void fix() {
+        private void Fix() {
             //Frack_Fixer fixer = new Frack_Fixer(FS,CloudCoinCore.Config.milliSecondsToTimeOut);
             fixer.continueExecution = true;
             fixer.IsFixing = true;
-            fixer.fixAll();
+            fixer.FixAll();
             fixer.IsFixing = false;
         }
         private void ShowCoins()
@@ -573,9 +598,13 @@ namespace CloudCoinMAC
             int total = onesCount + fivesCount + qtrCount + hundredsCount + twoFiftiesCount;
             int totalAmount = onesCount + (fivesCount * 5) + (qtrCount * 25) + (hundredsCount * 100) + (twoFiftiesCount * 250);
 
-            DataSource.Products.Add(new Product("Bank Total", total.ToString(), string.Format("{0:n0}", totalAmount)
+            string totalStr = string.Format("{0:n0}", total);
+            //totalStr = String.Format("{0:#,###,###.##}", total);
+            //totalStr = total.ToString("###,###,####");
+            DataSource.Products.Add(new Product("Bank Total", totalStr , string.Format("{0:n0}", totalAmount)
                                                  + " CC"));
-
+            //DataSource.Products.Add(new Product("","Bank Total", string.Format("{0:n0}", totalAmount)
+             //                                    + " CC"));
             // Populate the Product Table
             ProductTable.DataSource = DataSource;
             ProductTable.Delegate = new ProductTableDelegate(DataSource);
@@ -588,7 +617,9 @@ namespace CloudCoinMAC
 */
             //lblBankTotal.IntValue = totalAmount;
         }
-
+        private void printLineDots(){
+            updateLog("****************************************************************************************************");
+        }
         partial void BackupClicked(NSObject sender)
         {
             try{
@@ -652,11 +683,15 @@ namespace CloudCoinMAC
 
                     if (num == 1000)
                     {
-                        FS.WriteCoinsToFile(bankCoins, dlg.Urls[0].Path + System.IO.Path.DirectorySeparatorChar +
-                                            "backup" + DateTime.Now.ToString("yyyyMMddHHmmss").ToLower());
-
-                        //export(dlg.Urls[0].Path);
                         String backupDir = dlg.Urls[0].Path;
+
+                        string backupFileName = "backup" + DateTime.Now.ToString("yyyyMMddHHmmss").ToLower(); 
+                        FS.WriteCoinsToFile(bankCoins, dlg.Urls[0].Path + System.IO.Path.DirectorySeparatorChar +
+                                            backupFileName);
+                        printLineDots();
+                        updateLog("Backup file " + backupFileName + " saved to " + backupDir + " .");
+                        printLineDots();
+                        //export(dlg.Urls[0].Path);
                         NSWorkspace.SharedWorkspace.SelectFile(backupDir,
                                                                backupDir);
 
@@ -702,6 +737,7 @@ namespace CloudCoinMAC
                         String backupDir = (dlg.Urls[0].Path);
                         //backupDir = System.Web.HttpUtility.UrlEncode("/Users/ivanolsak/Desktop/CC tests/MAC 1.0.3/CloudCoin/Export");
                         NSSavePanel panel = new NSSavePanel();
+                        printLineDots();
                         updateLog("List Serials Path Selected - "+ backupDir);
                         //panel.DirectoryUrl = new NSUrl(backupDir);
                         panel.DirectoryUrl = dlg.Urls[0];
@@ -746,8 +782,10 @@ namespace CloudCoinMAC
 
                             string targetPath = panel.Url.Path;
                             File.WriteAllText(targetPath, csv.ToString());
-                            NSWorkspace.SharedWorkspace.SelectFile(backupDir,
-                                                                   backupDir);
+                            updateLog("CSV file " + targetPath + " saved.");
+                            printLineDots();
+                            NSWorkspace.SharedWorkspace.SelectFile(targetPath,
+                                                                   targetPath);
                         }
                     }
 
@@ -845,6 +883,7 @@ namespace CloudCoinMAC
                         FileSystem fileUtils = new FileSystem(RootPath); 
 
                         fileUtils.CreateFolderStructure();
+                        updateLog("Workspace changed to " + RootPath + " .");
                         System.Diagnostics.Process.GetCurrentProcess().Kill();
                         AppDelegate.FS = new FileSystem(RootPath);
 
@@ -868,9 +907,11 @@ namespace CloudCoinMAC
                 updateLog("Stopping Fix");
                 Debug.WriteLine("Stopping Fix");
             }
+            printLineDots();
             updateLog("Starting CloudCoin Export.");
-            updateLog("Please do not close the CloudCoin CE program until it is finished. " +
-                      "Otherwise it may result in loss of CloudCoins.");
+            updateLog("\tPlease do not close the CloudCoin CE program until it is finished. " +
+                      "\n\tOtherwise it may result in loss of CloudCoins.");
+            printLineDots();
             System.Threading.SpinWait.SpinUntil(() => !fixer.IsFixing);
            
             //updateLog("Exporting XYZ CloudCoins from Bank. Do not close CloudCoin CE program until it is finished!");
@@ -883,8 +924,54 @@ namespace CloudCoinMAC
             int grandTotal = (bankTotals[0] + frackedTotals[0] + partialTotals[0]);
             int exportTotal = exp_1 + (exp_5 * 5) + (exp_25 * 25) + (exp_100 * 100) + (exp_250 * 250);
 
-            updateLog("Exporting "+ exportTotal +" CloudCoins from Bank. Do not close CloudCoin CE program until it is finished!");
+            if(exp_1> onesCount) {
+                updateLog("Export of CloudCoins stopped.");
+                updateLog("\tNot sufficient coins in denomination 1.");
+                Task.Run(() => {
+                    Fix();
+                });
+                return;
+            }
+            if (exp_5 > fivesCount)
+            {
+                updateLog("Export of CloudCoins stopped.");
+                updateLog("\tNot sufficient coins in denomination 5.");
+                Task.Run(() => {
+                    Fix();
+                });
+                return;
+            }
+            if (exp_25 > qtrCount)
+            {
+                updateLog("Export of CloudCoins stopped.");
+                updateLog("\tNot sufficient coins in denomination 25.");
+                Task.Run(() => {
+                    Fix();
+                });
+               return;
+            }
+            if (exp_100 > hundredsCount)
+            {
+                updateLog("Export of CloudCoins stopped.");
+                updateLog("\tNot sufficient coins in denomination 100.");
+                Task.Run(() => {
+                    Fix();
+                });
+                return;
+            }
+            if (exp_250 > twoFiftiesCount)
+            {
+                updateLog("Export of CloudCoins stopped.");
+                updateLog("\tNot sufficient coins in denomination 250.");
+                Task.Run(() => {
+                    Fix();
+                });
+                return;
+            }
 
+
+            updateLog("Exporting "+ exportTotal +" CloudCoins from Bank.");
+            printLineDots();
 
             // state how many 1, 5, 25, 100 and 250
             //int exp_1 = Convert.ToInt16(txtOnes.IntValue);
@@ -898,6 +985,9 @@ namespace CloudCoinMAC
             {
                 Console.WriteLine("Can not export 0 coins");
                 updateLog("Can not export 0 coins");
+                Task.Run(() => {
+                    Fix();
+                });
                 return;
             }
 
@@ -906,8 +996,10 @@ namespace CloudCoinMAC
             if (((bankTotals[1] + frackedTotals[1]) + (bankTotals[2] + frackedTotals[2]) + (bankTotals[3] + frackedTotals[3]) + (bankTotals[4] + frackedTotals[4]) + (bankTotals[5] + frackedTotals[5]) + partialTotals[1] + partialTotals[2] + partialTotals[3] + partialTotals[4] + partialTotals[5]) > 1000)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
-                updateLog("Warning: You have more than 1000 Notes in your bank. Stack files should not have more than 1000 Notes in them.");
-                updateLog("Do not export stack files with more than 1000 notes. .");
+                printLineDots();
+                updateLog("Warning!: You have more than 1000 Notes in your bank. \n\tStack files should not have more than 1000 Notes in them.");
+                updateLog("\tDo not export stack files with more than 1000 notes. .");
+                printLineDots();
                 Console.Out.WriteLine("Warning: You have more than 1000 Notes in your bank. Stack files should not have more than 1000 Notes in them.");
                 Console.Out.WriteLine("Do not export stack files with more than 1000 notes. .");
                 //updateLog("Warning: You have more than 1000 Notes in your bank. Stack files should not have more than 1000 Notes in them.");
@@ -935,11 +1027,11 @@ namespace CloudCoinMAC
             }
             // end if type jpge or stack
             Console.Out.WriteLine("Exporting of the CloudCoins Completed.");
-            updateLog("Exporting of the CloudCoins Completed.");
-            updateLog("Exported "+ String.Format("{0:n0}", (exp_1 + exp_5 + exp_25 + exp_100 + exp_250)) 
-                      +" coins in total of "+ String.Format("{0:n}", exportTotal) +" CC into " +
-                      " " + FS.ExportFolder);
-
+            updateLog("Export of the CloudCoins Completed.");
+            updateLog("\tExported "+ String.Format("{0:n0}", (exp_1 + exp_5 + exp_25 + exp_100 + exp_250)) 
+                      +" coins in Total of "+ String.Format("{0:n}", exportTotal) +" CC into " +
+                      " " + FS.ExportFolder + " .");
+            printLineDots();
             //NSWorkspace.SharedWorkspace.SelectFile(FS.ExportFolder,
               //                                     FS.ExportFolder);
             NSWorkspace.SharedWorkspace.OpenFile(FS.ExportFolder);
@@ -947,6 +1039,9 @@ namespace CloudCoinMAC
             BeginInvokeOnMainThread(() =>
             {
                 ShowCoins();
+            });
+            Task.Run(() => {
+                Fix();
             });
            
         }// end export One
